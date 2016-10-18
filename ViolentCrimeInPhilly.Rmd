@@ -1,0 +1,206 @@
+---
+title: "Violent Crime in Philadelphia"
+author: "Vijay Pulijala"
+date: "October 18, 2016"
+output: html_document
+---
+
+<br>
+<br>
+
+```{r setup, include=FALSE}
+require(lubridate)
+require(zoo)
+require(tidyr)
+require(ggplot2)
+require(dplyr)
+require(scales)
+require(forecast)
+
+#read in the data
+Data <- read.csv("C:/Users/vpulij001c/Desktop/Vj/++R++/Philedelphia/philadelphiacrimedata/crime.csv", stringsAsFactors = F)
+
+#tidy up time/date fields
+Data$Dispatch_Date_Time <- ymd_hms(Data$Dispatch_Date_Time)
+Data$Dispatch_Date <- ymd(Data$Dispatch_Date)
+Data$Dispatch_Time <- hms(Data$Dispatch_Time)
+Data$Hour <- hours(Data$Hour)
+Data$Month <- as.yearmon(Data$Month)
+
+#add new condensed categorical crime var (Based on FBI's Uniform Crime Reporting guidelines)
+Data$crime_cat_cond <- Data$Text_General_Code
+Data$crime_cat_cond[Data$crime_cat_cond == "Homicide - Gross Negligence" |
+                    Data$crime_cat_cond == "Homicide - Justifiable" |
+                    Data$crime_cat_cond == "Homicide - Criminal" ] <- "Criminal Homicide"
+Data$crime_cat_cond[Data$crime_cat_cond == "Robbery Firearm" |
+                    Data$crime_cat_cond == "Robbery No Firearm" ] <- "Robbery"
+Data$crime_cat_cond[Data$crime_cat_cond == "Aggravated Assault Firearm" |
+                    Data$crime_cat_cond == "Aggravated Assault No Firearm" ] <- "Aggravated Assault"
+Data$crime_cat_cond[Data$crime_cat_cond == "Burglary Residential" |
+                    Data$crime_cat_cond == "Burglary Non-Residential"] <- "Burglary"
+Data$crime_cat_cond[Data$crime_cat_cond == "Recovered Stolen Motor Vehicle" |
+                    Data$crime_cat_cond == "Motor Vehicle Theft" ] <- "Motor Vehicle Theft"
+Data$crime_cat_cond[Data$crime_cat_cond == "Thefts" |
+                    Data$crime_cat_cond == "Theft from Vehicle" ] <- "Larceny-Theft"
+```
+
+In this exploration of Philadelphia's crime data, I try to understand the violent crime trend over time, and predict what the city's crime levels will look like in future.
+
+Let's start with a look at the overall trend of violent crime in Philadelphia. Violent crime incorporates all crimes listed as a homicide, aggravated assault, rape, or burglary incident.
+
+<br>
+
+```{r echo=FALSE}
+#create monthly dataset of violent crime crime - removing Oct '16 as not a full month
+month <- Data %>%
+  filter(crime_cat_cond == "Criminal Homicide" | crime_cat_cond == "Robbery" |
+           crime_cat_cond == "Aggravated Assault" | crime_cat_cond == "Rape") %>%
+  group_by(Month) %>%
+  filter(Month != "Oct 2016") %>%
+  summarise(n = n())
+
+ggplot(month, aes(as.Date(Month), n)) +
+  geom_line() +
+  scale_x_date(date_labels = "%Y") +
+  labs(x = "Year", y = "No. of Crimes", title = "Violent Crime in Philadelphia, Jan 2006 - September 2016")
+```
+
+There seems to be seasonal variation in the number of violent crimes per month: a peak every summer, and a trough every winter. 
+
+This time series could probably be described using an additive model, as the seasonal fluctuations are roughly constant in size over time and do not seem to depend on the level of the time series, and the random fluctuations also seem to be roughly constant in size over time.
+
+Let's now examine the trend over time for violent crimes under each key category (as used in the FBIs Uniform Crime Reporting guidelines).
+
+<br>
+
+```{r echo=FALSE}
+#create monthly dataset of violent crime crime by category - removing Sep '16 as not a full month
+month_cat <- Data %>%
+  filter(crime_cat_cond == "Criminal Homicide" | crime_cat_cond == "Robbery" |
+           crime_cat_cond == "Aggravated Assault" | crime_cat_cond == "Rape") %>%
+  group_by(crime_cat_cond, Month) %>%
+  filter(Month != "Oct 2016") %>%
+  summarise(n = n())
+
+ggplot(month_cat, aes(as.Date(Month), n)) +
+  geom_line() +
+  scale_x_date(date_labels = "%Y") +
+  labs(x = "Year", y = "No. of Crimes", title = "Violent Crime in Philadelphia, Jan 2006 - September 2016") +
+  facet_wrap( ~ crime_cat_cond, scales = "free")
+```
+
+Aggravated assault and robbery share almost identical trends over time (and if you notice the x-axes limits, also make up most of the violent crime) to the overall series. Criminal homicide and rape share some of this seasonality effect, but exhibit far more variation month-to-month also.
+
+<br>
+<br>
+
+## Decomposing the Time Series
+
+A seasonal time series consists of a trend component, a seasonal component and an irregular component. Decomposing the time series means separating the time series into these three components: that is, estimating these three components.
+
+As discussed above, the time series of the number of crimes per month in Philadelphia is seasonal with a peak every summer and trough every winter, and can probably be described using an additive model since the seasonal and random fluctuations seem to be roughly constant in size over time. 
+
+To estimate the components of a seasonal time series that can be described using an additive model, we can use the "decompose()" function in R. Let's estimate the trend, seasonal and irregular components of this time series.
+
+<br>
+
+```{r echo=FALSE}
+month_ts <- ts(month$n, frequency=12, start=c(2006,1))
+
+month_ts_components <- decompose(month_ts)
+
+plot(month_ts_components)
+```
+
+The plot above shows the original time series (top), the estimated trend component (second from top), the estimated seasonal component (third from top), and the estimated irregular component (bottom). We see that the estimated trend component shows a slight increase in violent crime during 2008 and 2012, but a steady decrease otherwise - that is, until 2015.
+
+<br>
+<br>
+
+## Seasonal Adjustment
+
+If you have a seasonal time series that can be described using an additive model (like ours), you can seasonally adjust the time series by estimating the seasonal component, and subtracting the estimated seasonal component from the original time series. We can do this using the estimate of the seasonal component calculated by the "decompose()" function.
+
+```{r echo=FALSE}
+month_ts_seasonallyadjusted <- month_ts - month_ts_components$seasonal
+
+plot(month_ts_seasonallyadjusted)
+```
+
+The seasonal variation has been removed from the seasonally adjusted time series. The seasonally adjusted time series now just contains the trend component and an irregular component.
+
+<br>
+<br>
+
+## Near-term Forecasting
+
+If you have a time series that can be described using an additive model with increasing or decreasing trend and seasonality, you can use Holt-Winters exponential smoothing to make short-term forecasts.
+
+Holt-Winters exponential smoothing estimates the level, slope and seasonal component at the current time point. Smoothing is controlled by three parameters: alpha, beta, and gamma, for the estimates of the level, slope b of the trend component, and the seasonal component, respectively, at the current time point. The parameters alpha, beta and gamma all have values between 0 and 1, and values that are close to 0 mean that relatively little weight is placed on the most recent observations when making forecasts of future values.
+
+To make forecasts, we can fit a predictive model using the HoltWinters() function.
+
+<br>
+
+```{r echo=FALSE}
+month_ts_forecasts <- HoltWinters(month_ts)
+month_ts_forecasts
+```
+
+The estimated values of alpha, beta and gamma are 0.24, 0.02, and 0.43, respectively. 
+
+The value of alpha (0.24) is relatively low, indicating that the estimate of the level at the current time point is based upon both recent observations and some observations in the more distant past. 
+
+The value of beta is 0.02, indicating that the estimate of the slope b of the trend component is not updated over the time series, and instead is set equal to its initial value. This makes good intuitive sense, as the level changes quite a bit over the time series, but the slope b of the trend component remains roughly the same. 
+
+The value of gamma (0.43) is also relatively low, again indicating that the estimate of the level at the current time point is based upon both recent observations and some observations in the more distant past. 
+
+As for simple exponential smoothing and Holt's exponential smoothing, we can plot the original time series as a black line, with the forecasted values as a red line on top of that:
+
+```{r echo=FALSE}
+plot(month_ts_forecasts)
+```
+
+We see from the plot that the Holt-Winters exponential method is very successful in predicting the seasonal peaks each summer.
+
+To make forecasts for future times not included in the original time series, we use the "forecast.HoltWinters()" function in the "forecast" package. The original data is from January 2006 to September 2016, so let's make forecasts for October 2016 to January 2020 (39 more months) and plot these.
+
+```{r echo=FALSE}
+month_ts_forecasts2 <- forecast.HoltWinters(month_ts_forecasts, h=39)
+plot.forecast(month_ts_forecasts2)
+```
+
+The forecasts are shown as a blue line, and the light blue and grey shaded areas show 80% and 95% prediction intervals, respectively.
+
+We can investigate whether the predictive model can be improved upon by checking whether the in-sample forecast errors show non-zero autocorrelations at lags 1-20, by making a correlogram and carrying out the Ljung-Box test.
+
+<br>
+
+```{r echo=FALSE}
+acf(month_ts_forecasts2$residuals, lag.max=20, na.action = na.omit)
+Box.test(month_ts_forecasts2$residuals, lag=20, type="Ljung-Box")
+```
+
+The correlogram shows that the autocorrelations for the in-sample forecast errors only exceed the significance bounds for lags 1-20 on one occasion. The p-value for Ljung-Box test is 0.22, indicating that there is little evidence of non-zero autocorrelations at lags 1-20.
+
+We can check whether the forecast errors have constant variance over time by making a time plot of the forecast errors.
+
+```{r echo=FALSE}
+plot.ts(month_ts_forecasts2$residuals)
+```
+
+From the time plot, it appears plausible that the forecast errors have constant variance over time. Thus, there is little evidence of autocorrelation at lags 1-20 for the forecast errors. 
+
+This suggests that Holt-Winters exponential smoothing provides an adequate predictive model of violent crimes in Philadelphia, and the assumptions upon which the prediction intervals were based are probably valid.
+
+<br>
+<br>
+
+## Conclusion
+
+Violent crimes in Philadelphia are on a downward trajectory, with constant seasonal (summer peaks, winter troughs) and random variation. We've decomposed this time series to expose this fact, and then forecasted future violent crime levels using Holt-Winters Exponential Smoothing.
+
+ In future, it would be useful to decompose and forecast *each* violent crime category, and try out Autoregressive Integrated Moving Average (ARIMA) modelling. In some cases you can make a better predictive model by taking correlations in the data into account (which ARIMA does).
+ 
+<br>
+<br>
